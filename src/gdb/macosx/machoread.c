@@ -35,6 +35,20 @@
 #include "gdbcmd.h"
 #include "completer.h"
 #include "dwarf2read.h"
+#include "macosx-tdep.h"
+
+/* For the gdbarch_tdep structure so we can get the wordsize. */
+#if defined(TARGET_POWERPC)
+#include "ppc-tdep.h"
+#elif defined (TARGET_I386)
+#include "amd64-tdep.h"
+#include "i386-tdep.h"
+#elif defined (TARGET_ARM)
+#include "arm-tdep.h"
+#else
+#error "Unrecognized target architecture."
+#endif
+#include "gdbarch.h"
 
 #include "mach-o.h"
 #include "gdb_assert.h"
@@ -374,6 +388,7 @@ macho_build_psymtabs (struct objfile *objfile, int mainline,
     {
 #endif
 #if defined (TARGET_ARM) && defined (NM_NEXTSTEP)
+      get_dyld_shared_cache_local_syms ();
       /* Hack for ARM native MacOSX targets where we can rely on anything
 	 in the shared cache being mapped in our process at the same 
 	 address. This can save us 10MB - 11MB which is a about a tenth
@@ -396,19 +411,27 @@ macho_build_psymtabs (struct objfile *objfile, int mainline,
 	        perror_with_name (name);
 	    }
 	  DBX_STRINGTAB (objfile) = g_shared_cache_stringtab;
-	  // /* If the bfd is in the shared cache, all images will share the
-	  //    same string table, so we need to make one copy of the shared
-	  //    string table and keep it around.  */
-	  // asection *linkedit_sect = NULL;
-	  // CORE_ADDR strtab_addr = 0;
-	  // linkedit_sect = bfd_get_section_by_name (sym_bfd, 
-	  // 						   "LC_SEGMENT.__LINKEDIT");
-	  // if (linkedit_sect == NULL)
-	  //   error ("error parsing symbol file: no __LINKEDIT section was found");
-	  // 
-	  // strtab_addr = bfd_section_vma (sym_bfd, linkedit_sect) + 
-	  // 			(stabstrsect->filepos - linkedit_sect->filepos);
-     	  //DBX_STRINGTAB (objfile) = (char *)strtab_addr;
+
+          /* Pre-seed the minsyms for this objfile with the nlist records in
+             the separate dyld_shared_cache file on iOS devices -- the in-memory
+             copy won't have the symbols.  */
+          struct gdb_copy_dyld_cache_local_symbols_entry *dsc_locsyms_entry = NULL;
+          CORE_ADDR slide = 0;
+          if (objfile->sections && objfile->sections[objfile->sect_index_text].the_bfd_section)
+            {
+              dsc_locsyms_entry = get_dyld_shared_cache_entry (objfile->sections[objfile->sect_index_text].the_bfd_section->lma);
+              slide = objfile->sections[objfile->sect_index_text].addr - objfile->sections[objfile->sect_index_text].the_bfd_section->lma;
+            }
+          if (dsc_locsyms_entry && dsc_locsyms_entry->nlistCount > 0)
+            {
+              int nlist_size;
+              if (gdbarch_tdep (current_gdbarch)->wordsize == 4)
+                nlist_size = 12;
+              else
+                nlist_size = 16;
+              uint8_t *base = dyld_shared_cache_local_nlists + (dsc_locsyms_entry->nlistStartIndex * nlist_size);
+              add_dyld_shared_cache_local_symbols (objfile, base, dsc_locsyms_entry->nlistCount, nlist_size, dyld_shared_cache_strings, slide, mainline);
+            }
 	}
       else
 	{	

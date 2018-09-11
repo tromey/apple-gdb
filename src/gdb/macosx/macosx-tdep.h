@@ -97,4 +97,24 @@ int slide_kernel_objfile (struct objfile *o, CORE_ADDR in_memory_addr, uuid_t in
 
 int try_to_find_and_load_kernel_via_uuid (CORE_ADDR in_memory_addr, uuid_t in_memory_uuid, enum gdb_osabi osabi);
 
+
+struct gdb_copy_dyld_cache_local_symbols_entry
+{
+        uint32_t        dylibOffset;      // file (pre-loaded) address of this dylib minus 0x30000000
+        uint32_t        nlistStartIndex;  // nlist record number in the array at dyld_shared_cache_local_nlists
+        uint32_t        nlistCount;       // number of nlist records for this dylib
+};
+
+extern uint8_t *dyld_shared_cache_local_nlists;
+extern int dyld_shared_cache_local_nlists_count;
+extern char *dyld_shared_cache_strings;
+extern int dyld_shared_cache_strings_size;
+extern struct gdb_copy_dyld_cache_local_symbols_entry *dyld_shared_cache_entries;
+extern int dyld_shared_cache_entries_count;
+
+void free_dyld_shared_cache_local_syms ();
+void get_dyld_shared_cache_local_syms ();
+struct gdb_copy_dyld_cache_local_symbols_entry *get_dyld_shared_cache_entry (CORE_ADDR intended_load_addr);
+
+
 #endif /* __GDB_MACOSX_TDEP_H__ */

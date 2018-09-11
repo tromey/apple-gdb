@@ -1,3 +1,27 @@
+2012-07-16  Jason Molenda  (jmolenda@apple.com)
+
+	* macosx-tdep.c (exhaustive_search_for_kernel_in_memory): 
+	Print a warning before we start the exhaustive search for
+	a kernel image in memory - we should be rarely resorting
+	to doing this for real kernel debug sessions and it may
+	help people doing non-kernel work to clue in what the issue
+	is & how to work around it.  Also, don't do an exhaustive
+	search if we're debugging a 64-bit target, it takes forever
+	and is rarely necessary.
+
+2012-06-28  Jason Molenda  (jmolenda@apple.com)
+
+	* machoread.c (macho_build_psymtabs): If this is a dylib
+	in the in-memory dyld shared cache, load the nlist records and
+	strings from the on-disk dyld_shared_cache and add the symbols
+	to the objfile before processing the in-memory nlist records.
+	* macosx-tdep.c (get_dyld_shared_cache_local_syms): New function
+	to load the nlist records from the on-disk dyld_shared_cache file.
+	(free_dyld_shared_cache_local_syms): Function to free them.
+	(get_dyld_shared_cache_entry): Find a given dylib's section of
+	the local nlist records.
+	* macosx-tdep.h: Prototypes for above.
+
 2012-05-21  Jason Molenda  (jmolenda@apple.com)
 
 	* macosx-tdep.c (kaslr_memory_search_enabled): New set/show

@@ -1,5 +1,17 @@
 #! /bin/sh
 
+if [ -x "`dirname $0`/../../../usr/local/bin/bdgdb" ]
+then
+  echo Running bdgdb.
+  exec "`dirname $0`/../../../usr/local/bin/bdgdb" "$@"
+fi
+
+if [ -x "`dirname $0`/../local/bin/bdgdb" ]
+then
+  echo Running bdgdb.
+  exec "`dirname $0`/../local/bin/bdgdb" "$@"
+fi
+
 host_arch=""
 requested_arch="UNSET"
 architecture_to_use=""

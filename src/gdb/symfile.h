@@ -367,6 +367,9 @@ extern void read_oso_nlists (bfd *oso_bfd, struct partial_symtab *pst,
                              char ***common_symnames,
                              int *common_symnames_count);
 
+void add_dyld_shared_cache_local_symbols (struct objfile *objfile, uint8_t *nlist_records_start,
+                                     int nlist_records_count, int nlist_record_size,
+                                     char *strings_base, CORE_ADDR slide, int mainline);
 
 /* From mdebugread.c */
 

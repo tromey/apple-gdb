@@ -1,3 +1,14 @@
+2012-06-28  Jason Molenda  (jmolenda@apple.com)
+
+	* dbxread.c (record_minimal_symbol): Don't record any elided
+	strings for nlist records for dylibs in the shared cache in
+        memory on iOS devices.  These are not useful to show to users.
+	(add_dyld_shared_cache_local_symbols): Add the actual local
+	nlist records / symbol names to the objfile's msymbols before
+	we look through the in-memory nlist records t osee if there
+	are any useful ones to add there.  For dylibs in the shared
+	cache on iOS devices.
+
 2012-05-21  Jim Ingham <jingham@apple.com>
 
 	* dwarf2read.c (process_die): Handle DW_TAG_rvalue_reference_type.

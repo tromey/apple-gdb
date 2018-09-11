@@ -603,6 +603,16 @@ record_minimal_symbol (char *name, CORE_ADDR address, int type,
       && address < lowest_text_address)
     lowest_text_address = address;
 
+  /* The in-memory dyld shared cache libraries don't have their local
+     nlist records in-memory, they all point to a single placeholder
+     "<redacted>" name to convserve address space.  Don't add those
+     symbols to our symbol table. */
+#if defined (TARGET_ARM) && defined (NM_NEXTSTEP)
+  if (bfd_mach_o_in_shared_cached_memory (objfile->obfd) 
+      && strcmp (name, "<redacted>") == 0)
+    return;
+#endif
+
   /* APPLE LOCAL: Record the msymbol & make it special if it is.  */
   msym = prim_record_minimal_symbol_and_info
     (name, address, ms_type, NULL, section, bfd_section, objfile);
@@ -5962,6 +5972,68 @@ objfile_contains_objc (struct objfile *objfile)
   return 0;
 }
 
+
+/* On an iOS device the dylibs in the shared cache do not have all
+   their nlist records (and almost none of their strings) in memory
+   to conserve address space.  We need to pull in a separate file
+   from disk with the nlist records/real strings.  This function
+   adds those records to the objfile's minsyms before we process whatever
+   is actually present in memory.  */
+
+void
+add_dyld_shared_cache_local_symbols (struct objfile *objfile, uint8_t *nlist_records_base, 
+                                     int nlist_records_count, int nlist_record_size, 
+                                     char *strings_base, CORE_ADDR slide, int mainline)
+{
+#if defined (TARGET_ARM) && defined (NM_NEXTSTEP)
+  if (objfile == NULL || nlist_records_base == NULL || strings_base == NULL)
+    return;
+  if (nlist_record_size != 12 && nlist_record_size != 16)
+    return;
+  if (nlist_records_count == 0)
+    return;
+
+  /* If we are reinitializing, or if we have never loaded syms yet, init */
+  if (mainline
+      || (objfile->global_psymbols.size == 0
+          &&  objfile->static_psymbols.size == 0))
+    init_psymbol_list (objfile, nlist_record_size);
+
+  int i = 0;
+  while (i < nlist_records_count)
+    {
+      char *name;
+      int str_off;
+      CORE_ADDR address;
+      int8_t type;
+      int8_t sect;
+      int16_t desc;
+      uint8_t *p = nlist_records_base + (i * nlist_record_size);
+      memcpy (&str_off, p, 4);
+      memcpy (&type, p + 4, 1);
+      memcpy (&sect, p + 5, 1);
+      memcpy (&desc, p + 6, 2);
+      if (nlist_record_size == 12)
+        {
+          int32_t addr;
+          memcpy (&addr, p + 8, 4);
+          address = addr + slide;
+        }
+      else
+        {
+          int64_t addr;
+          memcpy (&addr, p + 8, 8);
+          address = addr + slide;
+        }
+      if (*(strings_base + str_off) == '_')
+        str_off++;
+      name = xstrdup (strings_base + str_off);
+      record_minimal_symbol (name, address, type, desc, objfile);
+      i++;
+    }
+#endif
+}
+
 
 static struct sym_fns aout_sym_fns =
 {

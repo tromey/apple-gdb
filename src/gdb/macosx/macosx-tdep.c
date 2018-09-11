@@ -3430,23 +3430,28 @@ exhaustive_search_for_kernel_in_mem (struct objfile *ofile, CORE_ADDR *addr, uui
         cur_addr = try_this_addr;
     }
 
+
   /* Fifth, start iterating from the beginning of the possible kernel region of memory
      until we run out of address space or find a kernel.  */
 
-  while (!found_kernel && cur_addr != 0 && cur_addr < stop_addr)
+  if (wordsize == 4 && !found_kernel)
     {
-      if (mach_kernel_starts_here_p (cur_addr, uuid, &in_memory_uuid, &in_memory_osabi))
+      printf_filtered ("Starting exhaustive search for kernel in memory, do 'set kaslr-memory-search 0' to disable this in the future.\n");
+      while (!found_kernel && cur_addr != 0 && cur_addr < stop_addr)
         {
-          found_kernel = 1;
-        }
-      else if (mach_kernel_starts_here_p (cur_addr + offset, uuid, &in_memory_uuid, &in_memory_osabi))
-        {
-          found_kernel = 1;
-          cur_addr += offset;
-        }
-      else
-        {
-          cur_addr += stride;
+          if (mach_kernel_starts_here_p (cur_addr, uuid, &in_memory_uuid, &in_memory_osabi))
+            {
+              found_kernel = 1;
+            }
+          else if (mach_kernel_starts_here_p (cur_addr + offset, uuid, &in_memory_uuid, &in_memory_osabi))
+            {
+              found_kernel = 1;
+              cur_addr += offset;
+            }
+          else
+            {
+              cur_addr += stride;
+            }
         }
     }
 
@@ -3685,6 +3690,172 @@ macosx_pid_or_tid_to_str (ptid_t ptid)
 #endif
   return buf;
 }
+
+
+/* On arm-native iOS systems the shared cache of libraries in memory doesn't
+   have all of the nlist records -- and the nlist records it does have will
+   have "<redacted>" as the only symbol name for every symbol to conserve
+   address space.  The complete list of nlist records and the symbol names
+   are stored on-disk as a special part of the dyld_shared_cache.
+   This function will pull in the nlist records, strings, and list of
+   dylibs/frameworks in the shared cache so we can get the correct
+   symbols when we create objfiles for the shared cache libraries.  */
+
+struct gdb_copy_dyld_cache_header
+{
+        char            magic[16];
+        uint32_t        mappingOffset;
+        uint32_t        mappingCount;
+        uint32_t        imagesOffset;
+        uint32_t        imagesCount;
+        uint64_t        dyldBaseAddress;
+        uint64_t        codeSignatureOffset;
+        uint64_t        codeSignatureSize;
+        uint64_t        slideInfoOffset;
+        uint64_t        slideInfoSize;
+        uint64_t        localSymbolsOffset;
+        uint64_t        localSymbolsSize;
+};
+struct gdb_copy_dyld_cache_local_symbols_info
+{
+        uint32_t        nlistOffset;
+        uint32_t        nlistCount;
+        uint32_t        stringsOffset;
+        uint32_t        stringsSize;
+        uint32_t        entriesOffset;
+        uint32_t        entriesCount;
+};
+
+
+/* DYLD_SHARED_CACHE_RAW has the struct dyld_cache_local_symbols_info,
+   followed by the array of struct dyld_cache_local_symbols_entry's,
+   followed by the nlist entries for all the dylibs in the shared
+   cache, followed by the strings for those nlist records.  All in
+   one big chunk.  The other pointers all point in to this buffer.  */
+uint8_t *dyld_shared_cache_raw;
+
+uint8_t *dyld_shared_cache_local_nlists = NULL;
+int dyld_shared_cache_local_nlists_count = 0;
+char *dyld_shared_cache_strings = NULL;
+int dyld_shared_cache_strings_size = 0;
+struct gdb_copy_dyld_cache_local_symbols_entry *dyld_shared_cache_entries = NULL;
+int dyld_shared_cache_entries_count = 0;
+
+void
+free_dyld_shared_cache_local_syms ()
+{
+  if (dyld_shared_cache_raw)
+    xfree (dyld_shared_cache_raw);
+  dyld_shared_cache_raw = NULL;
+  dyld_shared_cache_local_nlists = NULL;
+  dyld_shared_cache_local_nlists_count = 0;
+  dyld_shared_cache_strings = NULL;
+  dyld_shared_cache_strings_size = 0;
+  dyld_shared_cache_entries = NULL;
+  dyld_shared_cache_entries_count = 0;
+}
+
+
+void
+get_dyld_shared_cache_local_syms ()
+{
+#if defined (TARGET_ARM) && defined (NM_NEXTSTEP)
+
+  if (dyld_shared_cache_raw != NULL)
+    return;
+
+  /* TODO: If the processDetachedFromSharedRegion flag is set in the
+     dyld_all_image_infos struct (imported into the struct dyld_raw_infos
+     as process_detached_from_shared_region in macosx-nat-dyld.c) then
+     this process is not using the system-wide shared cache and we should
+     not import/use these nlist records.  */
+
+  int wordsize = gdbarch_tdep (current_gdbarch)->wordsize;
+  int nlist_entry_size;
+  if (wordsize == 4)
+    nlist_entry_size = 12;
+  else
+    nlist_entry_size = 16;
+
+  const char *osabi_name = gdbarch_osabi_name (gdbarch_osabi (current_gdbarch));
+  const char *arch_name = NULL;
+  if (strcmp (osabi_name, "Darwin") == 0)
+    arch_name = "arm";
+  else if (strcmp (osabi_name, "DarwinV6") == 0)
+    arch_name = "armv6";
+  else if (strcmp (osabi_name, "DarwinV7") == 0)
+    arch_name = "armv7";
+  else if (strcmp (osabi_name, "DarwinV7S") == 0)
+    arch_name = "armv7s";
+  else if (strcmp (osabi_name, "DarwinV7F") == 0)
+    arch_name = "armv7";
+  if (arch_name == NULL)
+    return;
+  char dsc_path[PATH_MAX];
+  snprintf(dsc_path, sizeof(dsc_path), 
+         "/System/Library/Caches/com.apple.dyld/dyld_shared_cache_%s",
+         arch_name);
+  FILE *dsc = fopen (dsc_path, "r");
+  if (dsc == NULL)
+    return;
+  struct gdb_copy_dyld_cache_header dsc_header;
+  if (fread (&dsc_header, sizeof (dsc_header), 1, dsc) != 1)
+    {
+      fclose (dsc);
+      return;
+    }
+
+  // We're dealing with an older dyld shared cache file that doesn't have 
+  // this info.
+  if (dsc_header.mappingOffset < sizeof (struct gdb_copy_dyld_cache_header))
+    {
+      fclose (dsc);
+      return;
+    }
+
+  if (fseek (dsc, dsc_header.localSymbolsOffset, SEEK_SET) != 0)
+    {
+      fclose (dsc);
+      return;
+    }
+
+  dyld_shared_cache_raw = (uint8_t *) xmalloc (dsc_header.localSymbolsSize);
+  if (fread (dyld_shared_cache_raw, dsc_header.localSymbolsSize, 1, dsc) != 1)
+    {
+      free_dyld_shared_cache_local_syms ();
+      fclose (dsc);
+      return;
+    }
+  fclose (dsc);
+
+  struct gdb_copy_dyld_cache_local_symbols_info *locsyms_header;
+  locsyms_header = (struct gdb_copy_dyld_cache_local_symbols_info *) dyld_shared_cache_raw;
+
+  dyld_shared_cache_local_nlists = dyld_shared_cache_raw + locsyms_header->nlistOffset;
+  dyld_shared_cache_local_nlists_count = locsyms_header->nlistCount;
+
+  dyld_shared_cache_strings = (char *) dyld_shared_cache_raw + locsyms_header->stringsOffset;
+  dyld_shared_cache_strings_size = locsyms_header->stringsSize;
+
+  dyld_shared_cache_entries = (struct gdb_copy_dyld_cache_local_symbols_entry *) dyld_shared_cache_raw + locsyms_header->entriesOffset;
+  dyld_shared_cache_entries_count = locsyms_header->entriesCount;
+#endif
+}
+
+struct gdb_copy_dyld_cache_local_symbols_entry *
+get_dyld_shared_cache_entry (CORE_ADDR intended_load_addr)
+{
+  get_dyld_shared_cache_local_syms ();
+  int i = 0;
+  while (i < dyld_shared_cache_entries_count)
+    {
+      if (dyld_shared_cache_entries[i].dylibOffset == intended_load_addr - 0x30000000)
+        return &dyld_shared_cache_entries[i];
+      i++;
+    }
+  return NULL;
+}
+
 
 void
 _initialize_macosx_tdep ()
